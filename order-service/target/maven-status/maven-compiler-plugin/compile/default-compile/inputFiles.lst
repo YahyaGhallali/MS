@@ -1,8 +1,16 @@
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\config\KafkaConfig.java
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\consumer\StockEventsConsumer.java
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\event\OrderCreatedEvent.java
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\event\StockRejectedEvent.java
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\event\StockReservedEvent.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\InsufficientStockException.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\Order.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\OrderController.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\OrderProcessingException.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\OrderRepository.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\OrderServiceApplication.java
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\outbox\OutboxEvent.java
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\outbox\OutboxEventRepository.java
+C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\outbox\OutboxPublisher.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\ProductDTO.java
 C:\Users\yahya\Desktop\MS1\order-service\src\main\java\com\example\orderservice\ProductNotFoundException.java

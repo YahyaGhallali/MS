@@ -1,95 +1,86 @@
 package com.example.orderservice;
 
+import com.example.orderservice.event.OrderCreatedEvent;
+import com.example.orderservice.outbox.OutboxEvent;
+import com.example.orderservice.outbox.OutboxEventRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.RestClient;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/orders")
 public class OrderController {
 
-    private static final String PRODUCT_SERVICE_URL = "http://product-service";
-
     private final OrderRepository orderRepository;
-    private final RestClient restClient;
+    private final OutboxEventRepository outboxEventRepository;
+    private final ObjectMapper objectMapper;
 
-    public OrderController(OrderRepository orderRepository, RestClient restClient) {
+    public OrderController(OrderRepository orderRepository,
+                           OutboxEventRepository outboxEventRepository,
+                           ObjectMapper objectMapper) {
         this.orderRepository = orderRepository;
-        this.restClient = restClient;
+        this.outboxEventRepository = outboxEventRepository;
+        this.objectMapper = objectMapper;
     }
 
-    // 1. Create Order -> POST http://localhost:8082/orders
+    // 1. Create Order -> POST /orders (Returns 202 Accepted, writes Order + OutboxEvent atomically)
     @PostMapping
-    public Order createOrder(@RequestBody Order order) {
-        ProductDTO product;
+    @Transactional
+    public ResponseEntity<Order> createOrder(@RequestBody Order order) {
+        // Set initial status to PENDING
+        order.setStatus("PENDING");
 
+        // Save order to database
+        Order savedOrder = orderRepository.save(order);
+
+        // Generate unique event ID
+        String eventId = UUID.randomUUID().toString();
+
+        // Build OrderCreatedEvent contract
+        OrderCreatedEvent event = new OrderCreatedEvent(
+                eventId,
+                savedOrder.getId(),
+                savedOrder.getProductId(),
+                savedOrder.getQuantity(),
+                Instant.now()
+        );
+
+        // Transactional Outbox Pattern: Save event to outbox table within the SAME DB transaction
         try {
-            // Deduct stock atomically in product-service (resolved via Eureka & LoadBalancer: http://product-service)
-            product = restClient.post()
-                    .uri(PRODUCT_SERVICE_URL + "/products/{id}/deduct-stock?quantity={qty}",
-                            order.getProductId(), order.getQuantity())
-                    .retrieve()
-                    .onStatus(status -> status.value() == 404, (request, response) -> {
-                        throw new ProductNotFoundException("Product with ID " + order.getProductId() + " not found in product-service!");
-                    })
-                    .onStatus(status -> status.value() == 400, (request, response) -> {
-                        throw new InsufficientStockException("Cannot place order: Insufficient stock for product ID " + order.getProductId());
-                    })
-                    .body(ProductDTO.class);
-
-        } catch (HttpClientErrorException.NotFound e) {
-            throw new ProductNotFoundException("Product with ID " + order.getProductId() + " not found in product-service!");
-        } catch (HttpClientErrorException.BadRequest e) {
-            throw new InsufficientStockException("Cannot place order: Insufficient stock for product ID " + order.getProductId());
-        }
-
-        if (product == null) {
-            throw new ProductNotFoundException("Product with ID " + order.getProductId() + " not found in product-service!");
-        }
-
-        // Copy price into unitPrice and compute totalPrice
-        order.setUnitPrice(product.getPrice());
-        order.setTotalPrice(product.getPrice() * order.getQuantity());
-
-        // Default status if not provided
-        if (order.getStatus() == null || order.getStatus().isBlank()) {
-            order.setStatus("CREATED");
-        }
-
-        // Save order to database with Compensating Transaction (Saga pattern)
-        try {
-            return orderRepository.save(order);
-        } catch (Exception ex) {
-            // Compensating Transaction: If local save fails, restore the previously deducted stock in product-service
-            compensateStock(order.getProductId(), order.getQuantity());
-            throw new OrderProcessingException(
-                    "Failed to save order locally. Compensating transaction executed: Stock for product ID "
-                            + order.getProductId() + " has been restored.", ex);
-        }
-    }
-
-    private void compensateStock(Long productId, int quantity) {
-        try {
-            restClient.post()
-                    .uri(PRODUCT_SERVICE_URL + "/products/{id}/restore-stock?quantity={qty}", productId, quantity)
-                    .retrieve()
-                    .toBodilessEntity();
+            String payload = objectMapper.writeValueAsString(event);
+            OutboxEvent outboxEvent = new OutboxEvent(
+                    eventId,
+                    "ORDER",
+                    savedOrder.getId(),
+                    "OrderCreated",
+                    payload
+            );
+            outboxEventRepository.save(outboxEvent);
         } catch (Exception e) {
-            System.err.println("CRITICAL: Failed to compensate stock for product ID " + productId + ": " + e.getMessage());
+            throw new RuntimeException("Failed to serialize OrderCreatedEvent to outbox table", e);
         }
+
+        // Return 202 Accepted so client can poll GET /orders/{id}
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(savedOrder);
     }
 
-    // 2. Get all orders -> GET http://localhost:8082/orders
+    // 2. Get all orders -> GET /orders
     @GetMapping
     public List<Order> getAllOrders() {
         return orderRepository.findAll();
     }
 
-    // 3. Get single order by ID -> GET http://localhost:8082/orders/1
+    // 3. Get single order by ID -> GET /orders/{id}
     @GetMapping("/{id}")
-    public Order getOrderById(@PathVariable Long id) {
-        return orderRepository.findById(id).orElse(null);
+    public ResponseEntity<Order> getOrderById(@PathVariable Long id) {
+        return orderRepository.findById(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
     }
 }

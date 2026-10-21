@@ -1,6 +1,6 @@
-# MS1 Microservices Workspace: Service Discovery & API Gateway
+# MS1 Microservices Workspace: Event-Driven Architecture with Apache Kafka & Saga Choreography
 
-This repository contains a full microservices ecosystem built with **Spring Boot 3.4.3**, **Spring Cloud 2024.0.0 (Moorgate)**, **Netflix Eureka**, and **Spring Cloud Gateway**, backed by PostgreSQL.
+This repository contains an end-to-end microservices ecosystem built with **Spring Boot 3.4.3**, **Spring Cloud 2024.0.0 (Moorgate)**, **Apache Kafka (KRaft mode)**, **Netflix Eureka**, and **Spring Cloud Gateway**, backed by PostgreSQL.
 
 ---
 
@@ -23,24 +23,106 @@ This repository contains a full microservices ecosystem built with **Spring Boot
                                       ▼              ▼
                     ┌─────────────────────────┐   ┌─────────────────────────┐
                     │ product-service         │   │ order-service           │
-                    │ - Replica 1             │   │ - Port 8082 (Internal)  │
-                    │ - Replica 2             │   │ - Client-Side           │
-                    │ - Port 8081 (Internal)  │◄──│   LoadBalancer          │
-                    │ - Attaches X-Instance-Id│   │ - http://product-service│
+                    │ - Replica 1 & 2         │   │ - Port 8082 (Internal)  │
+                    │ - Port 8081 (Internal)  │   │ - Transactional Outbox  │
+                    │ - Idempotent Consumer   │   │ - OutboxPublisher Task  │
                     └───────────┬─────────────┘   └───────────┬─────────────┘
                                 │                             │
                                 ▼                             ▼
                     ┌─────────────────────────┐   ┌─────────────────────────┐
                     │ product-db (PostgreSQL) │   │ order-db (PostgreSQL)   │
-                    └─────────────────────────┘   └─────────────────────────┘
+                    │ - products table        │   │ - orders table          │
+                    │ - processed_events      │   │ - outbox_events         │
+                    └───────────┬─────────────┘   └───────────┬─────────────┘
+                                │                             │
+                                └──────────────┬──────────────┘
+                                               │
+                                               ▼
+                              ┌─────────────────────────────────┐
+                              │      Apache Kafka Broker        │
+                              │      - Port 9092 (KRaft Mode)   │
+                              │  - order-created-topic          │
+                              │  - order-created-topic.DLT      │
+                              │  - stock-reserved-topic         │
+                              │  - stock-rejected-topic         │
+                              └─────────────────────────────────┘
 ```
 
-### Key Architectural Concepts
-1. **Dynamic Service Discovery**: Services register automatically with Eureka using their application name. Heartbeats, lease renewal, and health monitoring ensure dynamic registration without hardcoded IPs or ports.
-2. **Client-Side Load Balancing**: `order-service` uses `@LoadBalanced RestClient.Builder` with Spring Cloud LoadBalancer to call `http://product-service/...`. Requests are automatically distributed round-robin across active `product-service` instances.
-3. **Single Public Gateway (Reverse Proxy & Edge Concerns)**: Only `api-gateway` (port 8080) and `discovery-server` (port 8761) expose ports to the host machine. Downstream services are completely private within the Docker bridge network.
-4. **Distributed Tracing & Correlation**: The Gateway automatically generates or propagates an `X-Correlation-Id` header for each request and logs request lifecycles.
-5. **Instance Identification**: Each `product-service` replica logs its instance identifier (`HOSTNAME`) and attaches an `X-Instance-Id` header to responses, allowing easy verification of load distribution.
+---
+
+## Asynchronous Saga Choreography Flow
+
+```text
+ 1. POST /orders (Client)
+    │
+    ▼
+ [order-service]
+    │  (Atomic Local DB Transaction)
+    ├──► 1. Save Order (status: PENDING)
+    └──► 2. Save OutboxEvent (topic: order-created-topic)
+    │
+    ◄── Return 202 Accepted { id: 10, status: "PENDING" }
+    │
+    ▼
+ [OutboxPublisher] (@Scheduled background task)
+    │  Polls unprocessed events, publishes to Kafka
+    ▼
+  Kafka Topic: order-created-topic
+    │
+    ▼
+ [product-service: OrderCreatedConsumer]
+    ├── Idempotency Check: Query processed_events(eventId)
+    │     └── If already processed, skip duplicate message
+    ├── Record eventId in processed_events table
+    └── Check product stock in productdb
+          │
+          ├── (Stock Sufficient)
+          │     ├── Deduct stock
+          │     └── Publish StockReservedEvent ──► Kafka: stock-reserved-topic
+          │
+          └── (Product Not Found OR Insufficient Stock)
+                └── Publish StockRejectedEvent ──► Kafka: stock-rejected-topic
+    │
+    ▼
+ [order-service: StockEventsConsumer]
+    ├── If StockReservedEvent ──► Update order status to CONFIRMED
+    └── If StockRejectedEvent ──► Update order status to REJECTED
+    │
+    ▼
+ Client Polls GET /orders/10 ──► { "id": 10, "status": "CONFIRMED" }
+```
+
+---
+
+## Key Architectural Concepts & Trade-offs
+
+### 1. Event Contract Trade-off: Deliberate Duplication vs. Shared Library
+- **Decision**: Event contracts (`OrderCreatedEvent`, `StockReservedEvent`, `StockRejectedEvent`) are **deliberately duplicated** across `order-service` and `product-service` instead of placing them in a shared Maven library (`common-events.jar`).
+- **Rationale**:
+  - *Shared Module coupling*: A shared Java module creates tight compile-time and deployment coupling. Updating a schema in the shared library forces coordinated recompilation, version upgrades, and redeployment of both microservices, defeating independent deployability.
+  - *Deliberate Duplication*: Services remain completely independent at build time and runtime. Using Jackson JSON serialization with standard properties ensures the **Tolerant Reader pattern**, allowing each service to evolve internally without breaking others.
+
+### 2. Transactional Outbox Pattern (No Dual-Write Problem)
+- Direct publishing to Kafka within a REST request controller causes the classic **dual-write problem**: if the database commit succeeds but the Kafka broker is temporarily unreachable (or vice versa), the system is left in an inconsistent state.
+- **Solution**:
+  - `OrderController` saves the `Order` entity (status `PENDING`) and an `OutboxEvent` record inside a single Spring `@Transactional` database commit.
+  - A background `@Scheduled` worker (`OutboxPublisher`) reads unprocessed outbox events, delivers them to Kafka via `KafkaTemplate`, and marks them as processed upon broker acknowledgment.
+  - This provides **guaranteed at-least-once message delivery**.
+
+### 3. Idempotent Consumer Pattern
+- Because Kafka guarantees at-least-once delivery, consumers must handle duplicate messages gracefully (e.g., due to network blips or consumer rebalances).
+- In `product-service`, `OrderCreatedConsumer` checks the `processed_events` table using the unique `eventId`:
+  - If `processedEventRepository.existsById(eventId)` is true, the message is safely skipped.
+  - Otherwise, the `eventId` is recorded and stock reservation proceeds.
+
+### 4. Error Handling, Exponential Backoff & Dead-Letter Topic (DLT)
+- **Domain Rejections vs. Infrastructure Errors**:
+  - *Domain Rejections* (e.g. `ProductNotFoundException` or `InsufficientStockException`) are expected business outcomes. They are **not** retried; `product-service` publishes a `StockRejectedEvent` and commits the offset.
+  - *Poison Messages / Deserialization Failures*: Handled by Spring Kafka's `DefaultErrorHandler` configured with `DeadLetterPublishingRecoverer` and `ExponentialBackOff` (initial 1s, multiplier 2.0, max 3 attempts). If attempts are exhausted, the poison message is forwarded to `order-created-topic.DLT` to prevent head-of-line blocking.
+
+### 5. Asynchronous Client Interaction (Polling)
+- Instead of blocking HTTP connections waiting for cross-service calls, `POST /orders` immediately responds with **`202 Accepted`** and `{ "status": "PENDING" }`.
+- Clients poll `GET /orders/{id}` to observe status transitions (`PENDING` -> `CONFIRMED` or `REJECTED`).
 
 ---
 
@@ -49,40 +131,36 @@ This repository contains a full microservices ecosystem built with **Spring Boot
 ```text
 MS1/
 ├── pom.xml                               # Root parent POM with Spring Cloud 2024.0.0 BOM
-├── docker-compose.yml                    # Multi-container orchestration (Eureka, Gateway, DBs, Services)
+├── docker-compose.yml                    # Multi-container orchestration (Eureka, Gateway, Kafka, DBs, Services)
 ├── run-services.bat                      # Windows CMD launcher (Docker Compose)
 ├── run-services.ps1                      # PowerShell launcher (Docker Compose)
 ├── run-services.sh                       # Bash launcher (Docker Compose)
 ├── discovery-server/                     # Eureka Discovery Server (Port 8761)
 │   ├── Dockerfile
-│   ├── pom.xml
 │   └── src/main/
 ├── api-gateway/                          # Reactive Spring Cloud Gateway (Port 8080)
 │   ├── Dockerfile
-│   ├── pom.xml
-│   └── src/main/
-│       ├── java/com/example/apigateway/
-│       │   ├── ApiGatewayApplication.java
-│       │   └── LoggingAndCorrelationFilter.java
-│       └── resources/application.yml
-├── product-service/                      # Catalog Service (2 Replicas, Port 8081 Internal)
+│   └── src/main/java/com/example/apigateway/
+│       ├── ApiGatewayApplication.java
+│       └── LoggingAndCorrelationFilter.java
+├── product-service/                      # Catalog & Inventory Service (2 Replicas, Port 8081 Internal)
 │   ├── Dockerfile
-│   ├── pom.xml
-│   └── src/main/
-│       ├── java/com/example/productservice/
-│       │   ├── ProductController.java
-│       │   ├── InstanceIdFilter.java     # Attaches X-Instance-Id response header
-│       │   └── ...
-│       └── resources/application.properties
+│   └── src/main/java/com/example/productservice/
+│       ├── config/KafkaConfig.java       # Topics, DLT, DefaultErrorHandler, JSON Converter
+│       ├── consumer/OrderCreatedConsumer.java # Idempotent Kafka consumer
+│       ├── event/                        # Deliberately duplicated event contracts
+│       ├── idempotency/                  # ProcessedEvent entity & repository
+│       ├── ProductController.java
+│       └── InstanceIdFilter.java
 └── order-service/                        # Order Service (Port 8082 Internal)
     ├── Dockerfile
-    ├── pom.xml
-    └── src/main/
-        ├── java/com/example/orderservice/
-        │   ├── OrderController.java      # Calls http://product-service
-        │   ├── OrderServiceApplication.java # Configures @LoadBalanced RestClient
-        │   └── ...
-        └── resources/application.properties
+    └── src/main/java/com/example/orderservice/
+        ├── config/KafkaConfig.java       # Kafka topic declarations & converters
+        ├── consumer/StockEventsConsumer.java # Listens for StockReserved/StockRejected
+        ├── event/                        # Deliberately duplicated event contracts
+        ├── outbox/                       # OutboxEvent, OutboxEventRepository, OutboxPublisher
+        ├── OrderController.java          # 202 Accepted + Outbox write + GET by ID
+        └── OrderServiceApplication.java  # @EnableScheduling
 ```
 
 ---
@@ -93,8 +171,9 @@ MS1/
 |---|---|---|---|
 | **API Gateway** | `8080` | `http://localhost:8080` | **Sole public API entry point** |
 | **Eureka Server** | `8761` | `http://localhost:8761` | **Eureka Discovery Dashboard & Registry** |
-| **product-service** | `8081` | *Internal only* | Replicated (2 instances), load balanced |
-| **order-service** | `8082` | *Internal only* | Calls `http://product-service` via LoadBalancer |
+| **Apache Kafka** | `9092` | *Internal / Compose* | Message broker in KRaft mode |
+| **product-service** | `8081` | *Internal only* | Replicated (2 instances), load balanced, Kafka consumer |
+| **order-service** | `8082` | *Internal only* | Transactional outbox publisher & Kafka consumer |
 | **product-db** | `5432` | *Internal only* | PostgreSQL database for `product-service` |
 | **order-db** | `5432` | *Internal only* | PostgreSQL database for `order-service` |
 
@@ -116,7 +195,7 @@ To run in detached (background) mode:
 docker compose up -d --build
 ```
 
-View live logs (including gateway correlation and instance routing):
+View live logs (including outbox publication and Kafka consumer events):
 
 ```bash
 docker compose logs -f
@@ -167,7 +246,7 @@ You will see:
 
 ---
 
-### 2. Access Catalog via API Gateway
+### 2. View Product Catalog
 `GET http://localhost:8080/products`
 
 Response:
@@ -178,35 +257,77 @@ Response:
   { "id": 3, "name": "Keyboard", "price": 49.99, "stock": 25 }
 ]
 ```
-Response Headers will include:
-- `X-Correlation-Id: <generated-uuid>`
-- `X-Instance-Id: <container-id-of-responding-replica>`
 
 ---
 
-### 3. Place Orders and Verify Alternating Load Balancing
-Place multiple orders through the Gateway:
+### 3. Place Order & Observe Asynchronous Saga Completion
+1. Submit an order:
+   ```bash
+   curl -i -X POST http://localhost:8080/orders \
+     -H "Content-Type: application/json" \
+     -d '{"productId": 1, "quantity": 2}'
+   ```
+   **Immediate HTTP Response**: `202 Accepted`
+   ```json
+   {
+     "id": 1,
+     "productId": 1,
+     "quantity": 2,
+     "status": "PENDING"
+   }
+   ```
 
-`POST http://localhost:8080/orders`  
-Headers: `Content-Type: application/json`  
-Body:
-```json
-{
-  "productId": 1,
-  "quantity": 1
-}
-```
+2. Inspect container logs:
+   ```bash
+   docker compose logs -f order-service product-service
+   ```
+   - `order-service` logs: `[Outbox] Published OrderCreatedEvent [eventId=..., orderId=1] to Kafka topic order-created-topic`
+   - `product-service` logs: `[product-service] Reserved 2 units of product 'Laptop'. Stock updated from 10 to 8.`
+   - `order-service` logs: `[Order Service] Received StockReservedEvent for order ID: 1. Status updated to CONFIRMED.`
 
-Observe in the container logs (`docker compose logs -f product-service`):
-```text
-product-service-1 | [product-service:d4a1b2c3] Deducting stock for product ID 1, quantity 1
-product-service-2 | [product-service:e5f6a7b8] Deducting stock for product ID 1, quantity 1
-```
-Requests alternate round-robin between the two `product-service` replicas!
+3. Poll order status:
+   ```bash
+   curl -i http://localhost:8080/orders/1
+   ```
+   **HTTP 200 OK**:
+   ```json
+   {
+     "id": 1,
+     "productId": 1,
+     "quantity": 2,
+     "status": "CONFIRMED"
+   }
+   ```
 
 ---
 
-### 4. Correlation ID Tracing
+### 4. Test Saga Rejection (Insufficient Stock)
+1. Submit an order exceeding available inventory:
+   ```bash
+   curl -i -X POST http://localhost:8080/orders \
+     -H "Content-Type: application/json" \
+     -d '{"productId": 1, "quantity": 9999}'
+   ```
+   Returns `202 Accepted` with `"status": "PENDING"`.
+2. `product-service` emits `StockRejectedEvent`:
+   `[product-service] Insufficient stock for product Laptop [available=8, requested=9999]. Rejecting stock for orderId=2.`
+3. Poll order status:
+   ```bash
+   curl -i http://localhost:8080/orders/2
+   ```
+   Response shows order resolved to `"status": "REJECTED"`:
+   ```json
+   {
+     "id": 2,
+     "productId": 1,
+     "quantity": 9999,
+     "status": "REJECTED"
+   }
+   ```
+
+---
+
+### 5. Correlation ID Tracing
 Send a custom Correlation ID:
 ```bash
 curl -i -H "X-Correlation-Id: trace-abc-123" http://localhost:8080/products
@@ -215,26 +336,9 @@ The Gateway logs the incoming request with that ID, passes it to the downstream 
 
 ---
 
-## Swagger Through the Gateway (Task 6 Analysis)
-
-The OpenAPI specs for downstream services are reachable through the Gateway:
-- **`product-service` OpenAPI Spec**: `http://localhost:8080/v3/api-docs/product-service`
-- **`order-service` OpenAPI Spec**: `http://localhost:8080/v3/api-docs/order-service`
-
-### Is Aggregating Swagger UI in the Gateway Worth the Effort?
-- **Trade-off Analysis**:
-  - **Pros**: Gives developers a single web page to discover and interact with all APIs.
-  - **Cons & Complexities**:
-    1. **Reactive vs. Servlet Mismatch**: Spring Cloud Gateway is built on Spring WebFlux (reactive Netty), whereas downstream services use Spring WebMVC (Tomcat). Hosting Swagger UI directly in the Gateway requires pulling in WebFlux Swagger UI (`springdoc-openapi-starter-webflux-ui`).
-    2. **URL Rewrite & "Try It Out" Routing**: Downstream OpenAPI specs generate server URLs based on the service's internal port or relative path. For Swagger UI's "Try It Out" buttons to work through the Gateway without CORS or 404 errors, URL rewrites, OpenAPI server mutation filters, and `X-Forwarded-*` header forwarding must be heavily customized.
-    3. **Operational Boundary**: An API Gateway in production is meant to be a lightweight, high-throughput edge router, reverse proxy, and rate limiter. Running developer documentation UIs inside the edge proxy mixes operational runtime concerns with developer tooling.
-  - **Conclusion & Best Practice**: In production, routing the OpenAPI JSON specs (`/v3/api-docs/...`) through the Gateway (as implemented) is standard. Serving the visual Swagger UI is typically handled by a dedicated developer portal or API documentation service.
-
----
-
 ## Running Automated Tests
 
-All 34 automated unit and integration tests across the 4 modules can be executed with:
+All automated unit and integration tests across all modules (Eureka, API Gateway, Product Service, Order Service) can be executed with:
 
 ```bash
 mvn test

@@ -1,8 +1,8 @@
-com\example\orderservice\OrderProcessingException.class
 com\example\orderservice\OrderServiceApplication.class
-com\example\orderservice\Order.class
 com\example\orderservice\ProductDTO.class
 com\example\orderservice\OrderRepository.class
-com\example\orderservice\InsufficientStockException.class
 com\example\orderservice\OrderController.class
 com\example\orderservice\ProductNotFoundException.class
+com\example\orderservice\OrderProcessingException.class
+com\example\orderservice\Order.class
+com\example\orderservice\InsufficientStockException.class
