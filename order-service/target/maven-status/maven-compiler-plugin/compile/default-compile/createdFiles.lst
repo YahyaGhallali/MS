@@ -1,8 +1,16 @@
+com\example\orderservice\event\StockRejectedEvent.class
 com\example\orderservice\OrderServiceApplication.class
 com\example\orderservice\ProductDTO.class
 com\example\orderservice\OrderRepository.class
+com\example\orderservice\outbox\OutboxEvent.class
+com\example\orderservice\outbox\OutboxEventRepository.class
 com\example\orderservice\OrderController.class
 com\example\orderservice\ProductNotFoundException.class
 com\example\orderservice\OrderProcessingException.class
+com\example\orderservice\config\KafkaConfig.class
+com\example\orderservice\consumer\StockEventsConsumer.class
 com\example\orderservice\Order.class
+com\example\orderservice\event\OrderCreatedEvent.class
 com\example\orderservice\InsufficientStockException.class
+com\example\orderservice\event\StockReservedEvent.class
+com\example\orderservice\outbox\OutboxPublisher.class

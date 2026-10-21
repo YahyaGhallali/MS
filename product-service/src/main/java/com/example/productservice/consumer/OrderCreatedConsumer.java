@@ -77,7 +77,12 @@ public class OrderCreatedConsumer {
                     "Product with ID " + productId + " not found",
                     Instant.now()
             );
-            kafkaTemplate.send(KafkaConfig.STOCK_REJECTED_TOPIC, String.valueOf(orderId), rejectedEvent);
+            try {
+                String rejectedJson = objectMapper.writeValueAsString(rejectedEvent);
+                kafkaTemplate.send(KafkaConfig.STOCK_REJECTED_TOPIC, String.valueOf(orderId), rejectedJson);
+            } catch (Exception e) {
+                log.error("[product-service] Failed to serialize StockRejectedEvent", e);
+            }
             return;
         }
 
@@ -96,7 +101,12 @@ public class OrderCreatedConsumer {
                     "Insufficient stock for product " + product.getName() + ". Available: " + product.getStock() + ", Requested: " + quantity,
                     Instant.now()
             );
-            kafkaTemplate.send(KafkaConfig.STOCK_REJECTED_TOPIC, String.valueOf(orderId), rejectedEvent);
+            try {
+                String rejectedJson = objectMapper.writeValueAsString(rejectedEvent);
+                kafkaTemplate.send(KafkaConfig.STOCK_REJECTED_TOPIC, String.valueOf(orderId), rejectedJson);
+            } catch (Exception e) {
+                log.error("[product-service] Failed to serialize StockRejectedEvent", e);
+            }
             return;
         }
 
@@ -113,6 +123,11 @@ public class OrderCreatedConsumer {
                 quantity,
                 Instant.now()
         );
-        kafkaTemplate.send(KafkaConfig.STOCK_RESERVED_TOPIC, String.valueOf(orderId), reservedEvent);
+        try {
+            String reservedJson = objectMapper.writeValueAsString(reservedEvent);
+            kafkaTemplate.send(KafkaConfig.STOCK_RESERVED_TOPIC, String.valueOf(orderId), reservedJson);
+        } catch (Exception e) {
+            log.error("[product-service] Failed to serialize StockReservedEvent", e);
+        }
     }
 }

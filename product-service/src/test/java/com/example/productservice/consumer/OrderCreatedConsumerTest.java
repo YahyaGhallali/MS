@@ -64,7 +64,7 @@ class OrderCreatedConsumerTest {
         assertThat(product.getStock()).isEqualTo(8); // 10 - 2
         verify(productRepository, times(1)).save(product);
         verify(processedEventRepository, times(1)).save(any(ProcessedEvent.class));
-        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.STOCK_RESERVED_TOPIC), eq("1"), any(StockReservedEvent.class));
+        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.STOCK_RESERVED_TOPIC), eq("1"), any(String.class));
     }
 
     @Test
@@ -98,7 +98,7 @@ class OrderCreatedConsumerTest {
 
         assertThat(product.getStock()).isEqualTo(5); // unchanged
         verify(productRepository, never()).save(product);
-        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.STOCK_REJECTED_TOPIC), eq("2"), any(StockRejectedEvent.class));
+        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.STOCK_REJECTED_TOPIC), eq("2"), any(String.class));
     }
 
     @Test
@@ -113,6 +113,6 @@ class OrderCreatedConsumerTest {
         consumer.handleOrderCreated(json);
 
         verify(productRepository, never()).save(any());
-        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.STOCK_REJECTED_TOPIC), eq("3"), any(StockRejectedEvent.class));
+        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.STOCK_REJECTED_TOPIC), eq("3"), any(String.class));
     }
 }

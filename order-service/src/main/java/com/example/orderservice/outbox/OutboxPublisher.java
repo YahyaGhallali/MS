@@ -36,10 +36,10 @@ public class OutboxPublisher {
         for (OutboxEvent outboxEvent : pendingEvents) {
             try {
                 if ("OrderCreated".equals(outboxEvent.getEventType())) {
-                    OrderCreatedEvent event = objectMapper.readValue(outboxEvent.getPayload(), OrderCreatedEvent.class);
-                    kafkaTemplate.send(KafkaConfig.ORDER_CREATED_TOPIC, String.valueOf(event.getOrderId()), event);
-                    log.info("[Outbox] Published OrderCreatedEvent [eventId={}, orderId={}] to Kafka topic {}",
-                            event.getEventId(), event.getOrderId(), KafkaConfig.ORDER_CREATED_TOPIC);
+                    String payload = outboxEvent.getPayload();
+                    kafkaTemplate.send(KafkaConfig.ORDER_CREATED_TOPIC, String.valueOf(outboxEvent.getAggregateId()), payload);
+                    log.info("[Outbox] Published OrderCreatedEvent [aggregateId={}] to Kafka topic {}",
+                            outboxEvent.getAggregateId(), KafkaConfig.ORDER_CREATED_TOPIC);
                 }
                 outboxEvent.setProcessed(true);
                 outboxEventRepository.save(outboxEvent);

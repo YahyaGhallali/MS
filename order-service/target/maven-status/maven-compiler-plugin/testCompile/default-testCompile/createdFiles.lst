@@ -1,4 +1,6 @@
 com\example\orderservice\OrderControllerTest.class
+com\example\orderservice\outbox\OutboxPublisherTest.class
 com\example\orderservice\ExceptionsTest.class
 com\example\orderservice\ProductDTOTest.class
+com\example\orderservice\consumer\StockEventsConsumerTest.class
 com\example\orderservice\OrderTest.class

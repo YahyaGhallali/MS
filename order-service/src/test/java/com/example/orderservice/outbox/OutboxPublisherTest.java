@@ -51,7 +51,7 @@ class OutboxPublisherTest {
 
         outboxPublisher.publishPendingEvents();
 
-        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.ORDER_CREATED_TOPIC), eq("10"), any(OrderCreatedEvent.class));
+        verify(kafkaTemplate, times(1)).send(eq(KafkaConfig.ORDER_CREATED_TOPIC), eq("10"), eq(payload));
         verify(outboxEventRepository, times(1)).save(outboxEvent);
         assertThat(outboxEvent.isProcessed()).isTrue();
     }
