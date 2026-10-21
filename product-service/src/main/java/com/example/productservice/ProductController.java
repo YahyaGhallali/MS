@@ -70,4 +70,14 @@ public class ProductController {
         product.setStock(product.getStock() - quantity);
         return productRepository.save(product);
     }
+
+    // 7. Compensating transaction: Restore stock -> POST http://localhost:8081/products/1/restore-stock?quantity=2
+    @PostMapping("/{id}/restore-stock")
+    public Product restoreStock(@PathVariable Long id, @RequestParam int quantity) {
+        Product product = productRepository.findById(id)
+                .orElseThrow(() -> new ProductNotFoundException("Product not found with id: " + id));
+
+        product.setStock(product.getStock() + quantity);
+        return productRepository.save(product);
+    }
 }

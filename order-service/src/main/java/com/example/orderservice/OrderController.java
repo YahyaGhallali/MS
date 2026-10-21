@@ -56,8 +56,27 @@ public class OrderController {
             order.setStatus("CREATED");
         }
 
-        // Save order to H2 database and return it
-        return orderRepository.save(order);
+        // Save order to H2 database with Compensating Transaction (Saga pattern)
+        try {
+            return orderRepository.save(order);
+        } catch (Exception ex) {
+            // Compensating Transaction: If local save fails, restore the previously deducted stock in product-service
+            compensateStock(order.getProductId(), order.getQuantity());
+            throw new OrderProcessingException(
+                    "Failed to save order locally. Compensating transaction executed: Stock for product ID "
+                            + order.getProductId() + " has been restored.", ex);
+        }
+    }
+
+    private void compensateStock(Long productId, int quantity) {
+        try {
+            restClient.post()
+                    .uri("http://localhost:8081/products/{id}/restore-stock?quantity={qty}", productId, quantity)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (Exception e) {
+            System.err.println("CRITICAL: Failed to compensate stock for product ID " + productId + ": " + e.getMessage());
+        }
     }
 
     // 2. Get all orders -> GET http://localhost:8082/orders

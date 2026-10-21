@@ -1,3 +1,4 @@
+com\example\orderservice\OrderProcessingException.class
 com\example\orderservice\OrderServiceApplication.class
 com\example\orderservice\Order.class
 com\example\orderservice\ProductDTO.class

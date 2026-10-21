@@ -7,7 +7,7 @@ This repository contains two independent Spring Boot microservices:
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
 MS1/
@@ -20,6 +20,7 @@ MS1/
 │       │   ├── ProductRepository.java
 │       │   ├── ProductController.java
 │       │   ├── ProductNotFoundException.java
+│       │   ├── InsufficientStockException.java
 │       │   └── ProductServiceApplication.java
 │       └── resources/
 │           └── application.properties    # port 8081, jdbc:h2:mem:productdb
@@ -32,6 +33,8 @@ MS1/
         │   ├── OrderController.java
         │   ├── ProductDTO.java
         │   ├── ProductNotFoundException.java
+        │   ├── InsufficientStockException.java
+        │   ├── OrderProcessingException.java
         │   └── OrderServiceApplication.java
         └── resources/
             └── application.properties    # port 8082, jdbc:h2:mem:orderdb
@@ -39,7 +42,7 @@ MS1/
 
 ---
 
-## 🚀 How to Run
+## How to Run
 
 ### Option A: Using the Launcher Script (Recommended)
 
@@ -82,7 +85,7 @@ mvn spring-boot:run
 - **Swagger UI:** `http://localhost:8081/swagger-ui.html`
 - H2 Console: `http://localhost:8081/h2-console` (JDBC: `jdbc:h2:mem:productdb`)
 
-#### Terminal 2: Run Order Service
+##### Terminal 2: Run Order Service
 
 ```bash
 cd c:\Users\yahya\Desktop\MS1\order-service
@@ -95,7 +98,7 @@ mvn spring-boot:run
 
 ---
 
-## 📖 Swagger UI Interactive Documentation
+## Swagger UI Interactive Documentation
 
 Both microservices have Swagger UI enabled for testing APIs directly in your browser without needing curl or Postman:
 
@@ -108,11 +111,12 @@ Both microservices have Swagger UI enabled for testing APIs directly in your bro
 
 ---
 
-## 🌐 Endpoints & Testing
+## Endpoints & Testing
 
-### 1. Check Pre-loaded Products (product-service)
+### 1. Check Initial Products & Stock (product-service)
 
 `GET http://localhost:8081/products`
+
 Returns:
 
 ```json
@@ -125,7 +129,9 @@ Returns:
 
 ### 2. Place an Order (order-service)
 
-`POST http://localhost:8082/orders`
+Order 2 units of Laptop (`productId: 1`):
+
+`POST http://localhost:8082/orders`  
 Request body:
 
 ```json
@@ -148,9 +154,51 @@ Response:
 }
 ```
 
-### 3. Product Not Found (order-service)
+### 3. Verify Stock Decrement (product-service)
 
-`POST http://localhost:8082/orders`
+Inspect Laptop stock after placing the order:
+
+`GET http://localhost:8081/products/1`
+
+Response (`stock` has decreased from `10` to `8`):
+
+```json
+{
+  "id": 1,
+  "name": "Laptop",
+  "price": 999.99,
+  "stock": 8
+}
+```
+
+### 4. Insufficient Stock (order-service)
+
+Try ordering more items than available in stock:
+
+`POST http://localhost:8082/orders`  
+Request body:
+
+```json
+{
+  "productId": 1,
+  "quantity": 999
+}
+```
+
+Response: `HTTP 400 Bad Request`
+
+```json
+{
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Cannot place order: Insufficient stock for product ID 1",
+  "path": "/orders"
+}
+```
+
+### 5. Product Not Found (order-service)
+
+`POST http://localhost:8082/orders`  
 Request body:
 
 ```json
@@ -171,26 +219,42 @@ Response: `HTTP 404 Not Found`
 }
 ```
 
-### 4. Insufficient Stock (order-service)
+---
 
-`POST http://localhost:8082/orders`
-Request body:
+## Microservices Architecture: Database-Per-Service & Distributed Consistency
 
-```json
-{
-  "productId": 1,
-  "quantity": 999
-}
-```
+### The Core Problem: Why Two Databases Cannot Share One Transaction
+In a monolithic application with a single relational database, placing an order and decrementing stock can be wrapped in a single `@Transactional` method. If any step fails, the database automatically rolls back both tables atomically (ACID guarantees).
 
-Response: `HTTP 400 Bad Request`
+In a **microservices architecture** using the **Database-per-Service pattern**:
+- `product-service` owns its own database (`jdbc:h2:mem:productdb`).
+- `order-service` owns its own database (`jdbc:h2:mem:orderdb`).
+- Neither service can access the other's database directly.
 
-```json
-{
-  "status": 400,
-  "error": "Bad Request",
-  "message": "Cannot place order: Insufficient stock for product ID 1",
-  "path": "/orders"
-}
-```
+Spring's `@Transactional` annotation only manages the local connection to `orderdb`. It cannot span network calls to rollback changes made in `productdb`.
+
+### The Dual-Write Failure Scenario
+1. `order-service` calls `POST http://localhost:8081/products/1/deduct-stock?quantity=2`.
+2. `product-service` decrements stock from 10 to 8 and commits the change to `productdb`.
+3. If `order-service` encounters a local error (database constraint failure, unhandled runtime exception, or process crash) right before or during `orderRepository.save(order)`:
+   - The local order transaction fails.
+   - Without compensation, `productdb` retains the deducted stock (stock = 8), while `orderdb` has 0 record of the order.
+   - **Result:** Two laptops disappear from inventory without any order existing.
+
+### How This Project Solves It: Compensating Transaction (Saga Pattern)
+To ensure **eventual consistency** across both services:
+1. `product-service` provides a compensating endpoint:  
+   `POST http://localhost:8081/products/{id}/restore-stock?quantity={qty}`
+2. In `OrderController.java`, local order saving is wrapped in a failure handler:
+   ```java
+   try {
+       return orderRepository.save(order);
+   } catch (Exception ex) {
+       // Compensating Transaction (Saga): Restore deducted stock in product-service
+       compensateStock(order.getProductId(), order.getQuantity());
+       throw new OrderProcessingException("Order save failed. Compensating transaction executed: Stock restored.", ex);
+   }
+   ```
+3. If saving the order fails locally, `order-service` automatically invokes the compensating action to restore inventory, preserving stock consistency across independent services.
+
 
