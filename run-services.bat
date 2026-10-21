@@ -5,10 +5,12 @@ title Microservices Launcher (Docker Compose)
 echo ===================================================
 echo   Starting Microservices Stack with Docker Compose
 echo ===================================================
-echo - product-db      (PostgreSQL)
-echo - order-db        (PostgreSQL)
-echo - product-service (Port 8081)
-echo - order-service   (Port 8082)
+echo - discovery-server  (Eureka: http://localhost:8761)
+echo - api-gateway       (Public Entry: http://localhost:8080)
+echo - product-service   (2 Replicas, Load-Balanced)
+echo - order-service     (Load-Balanced)
+echo - product-db        (PostgreSQL)
+echo - order-db          (PostgreSQL)
 echo ===================================================
 echo.
 

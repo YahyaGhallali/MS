@@ -37,7 +37,7 @@ class OrderControllerTest {
     private OrderController orderController;
     private ObjectMapper objectMapper;
 
-    private static final String PRODUCT_SERVICE_URL = "http://localhost:8081";
+    private static final String PRODUCT_SERVICE_URL = "http://product-service";
 
     @BeforeEach
     void setUp() {
@@ -45,7 +45,7 @@ class OrderControllerTest {
         mockServer = MockRestServiceServer.bindTo(builder).build();
         RestClient restClient = builder.build();
 
-        orderController = new OrderController(orderRepository, restClient, PRODUCT_SERVICE_URL);
+        orderController = new OrderController(orderRepository, restClient);
         mockMvc = MockMvcBuilders.standaloneSetup(orderController).build();
         objectMapper = new ObjectMapper();
     }

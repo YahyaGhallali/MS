@@ -1,5 +1,6 @@
 com\example\productservice\ProductNotFoundException.class
 com\example\productservice\ProductRepository.class
+com\example\productservice\InstanceIdFilter.class
 com\example\productservice\ProductServiceApplication.class
 com\example\productservice\Product.class
 com\example\productservice\ProductController.class

@@ -1,5 +1,8 @@
 package com.example.productservice;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -8,10 +11,20 @@ import java.util.List;
 @RequestMapping("/products")
 public class ProductController {
 
+    private static final Logger log = LoggerFactory.getLogger(ProductController.class);
+
     private final ProductRepository productRepository;
+
+    @Value("${server.port:8081}")
+    private String serverPort;
 
     public ProductController(ProductRepository productRepository) {
         this.productRepository = productRepository;
+    }
+
+    private String getInstanceId() {
+        String host = System.getenv("HOSTNAME");
+        return (host != null && !host.isBlank()) ? host : "port-" + serverPort;
     }
 
     // 1. Get all products -> GET http://localhost:8081/products
@@ -59,6 +72,8 @@ public class ProductController {
     // 6. Deduct stock atomically -> POST http://localhost:8081/products/1/deduct-stock?quantity=2
     @PostMapping("/{id}/deduct-stock")
     public Product deductStock(@PathVariable Long id, @RequestParam int quantity) {
+        log.info("[product-service:{}] Deducting stock for product ID {}, quantity {}", getInstanceId(), id, quantity);
+
         Product product = productRepository.findById(id)
                 .orElseThrow(() -> new ProductNotFoundException("Product not found with id: " + id));
 
@@ -74,6 +89,8 @@ public class ProductController {
     // 7. Compensating transaction: Restore stock -> POST http://localhost:8081/products/1/restore-stock?quantity=2
     @PostMapping("/{id}/restore-stock")
     public Product restoreStock(@PathVariable Long id, @RequestParam int quantity) {
+        log.info("[product-service:{}] Restoring stock for product ID {}, quantity {}", getInstanceId(), id, quantity);
+
         Product product = productRepository.findById(id)
                 .orElseThrow(() -> new ProductNotFoundException("Product not found with id: " + id));
 

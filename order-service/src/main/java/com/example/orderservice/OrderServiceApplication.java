@@ -2,6 +2,7 @@ package com.example.orderservice;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.loadbalancer.LoadBalanced;
 import org.springframework.context.annotation.Bean;
 import org.springframework.web.client.RestClient;
 
@@ -12,9 +13,16 @@ public class OrderServiceApplication {
         SpringApplication.run(OrderServiceApplication.class, args);
     }
 
-    // Configures the RestClient bean for communicating with other microservices
+    // Configures load-balanced RestClient.Builder for Eureka service discovery
     @Bean
-    public RestClient restClient() {
-        return RestClient.create();
+    @LoadBalanced
+    public RestClient.Builder loadBalancedRestClientBuilder() {
+        return RestClient.builder();
+    }
+
+    // Configures RestClient bean using the load-balanced builder
+    @Bean
+    public RestClient restClient(RestClient.Builder loadBalancedRestClientBuilder) {
+        return loadBalancedRestClientBuilder.build();
     }
 }

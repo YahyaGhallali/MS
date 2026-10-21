@@ -1,9 +1,46 @@
-# MS1 Microservices Workspace
+# MS1 Microservices Workspace: Service Discovery & API Gateway
 
-This repository contains two independent Spring Boot microservices containerized with Docker and backed by PostgreSQL:
+This repository contains a full microservices ecosystem built with **Spring Boot 3.4.3**, **Spring Cloud 2024.0.0 (Moorgate)**, **Netflix Eureka**, and **Spring Cloud Gateway**, backed by PostgreSQL.
 
-1. **`product-service`** (Runs on port `8081`, backed by `productdb`, manages product catalog)
-2. **`order-service`** (Runs on port `8082`, backed by `orderdb`, places orders and communicates with `product-service` via `RestClient`)
+---
+
+## Architecture Overview
+
+```text
+                               ┌────────────────────────────────┐
+                               │  Eureka Discovery Server       │
+                               │  http://localhost:8761         │
+                               └───────────▲────────────────────┘
+                                           │ Heartbeats & Registration
+                                           │
+  Client Requests ──────► ┌────────────────┴──────────────────┐
+  (http://localhost:8080) │  Spring Cloud API Gateway         │
+                          │  - Port 8080 (Single Public Entry)│
+                          │  - Global Logging & Correlation ID│
+                          └───────────┬──────────────┬────────┘
+                   /products/**       │              │  /orders/**
+                (lb://product-service)│              │  (lb://order-service)
+                                      ▼              ▼
+                    ┌─────────────────────────┐   ┌─────────────────────────┐
+                    │ product-service         │   │ order-service           │
+                    │ - Replica 1             │   │ - Port 8082 (Internal)  │
+                    │ - Replica 2             │   │ - Client-Side           │
+                    │ - Port 8081 (Internal)  │◄──│   LoadBalancer          │
+                    │ - Attaches X-Instance-Id│   │ - http://product-service│
+                    └───────────┬─────────────┘   └───────────┬─────────────┘
+                                │                             │
+                                ▼                             ▼
+                    ┌─────────────────────────┐   ┌─────────────────────────┐
+                    │ product-db (PostgreSQL) │   │ order-db (PostgreSQL)   │
+                    └─────────────────────────┘   └─────────────────────────┘
+```
+
+### Key Architectural Concepts
+1. **Dynamic Service Discovery**: Services register automatically with Eureka using their application name. Heartbeats, lease renewal, and health monitoring ensure dynamic registration without hardcoded IPs or ports.
+2. **Client-Side Load Balancing**: `order-service` uses `@LoadBalanced RestClient.Builder` with Spring Cloud LoadBalancer to call `http://product-service/...`. Requests are automatically distributed round-robin across active `product-service` instances.
+3. **Single Public Gateway (Reverse Proxy & Edge Concerns)**: Only `api-gateway` (port 8080) and `discovery-server` (port 8761) expose ports to the host machine. Downstream services are completely private within the Docker bridge network.
+4. **Distributed Tracing & Correlation**: The Gateway automatically generates or propagates an `X-Correlation-Id` header for each request and logs request lifecycles.
+5. **Instance Identification**: Each `product-service` replica logs its instance identifier (`HOSTNAME`) and attaches an `X-Instance-Id` header to responses, allowing easy verification of load distribution.
 
 ---
 
@@ -11,42 +48,55 @@ This repository contains two independent Spring Boot microservices containerized
 
 ```text
 MS1/
-├── docker-compose.yml                    # Multi-container orchestration (DBs + Services)
-├── pom.xml                               # Root parent / aggregator POM
+├── pom.xml                               # Root parent POM with Spring Cloud 2024.0.0 BOM
+├── docker-compose.yml                    # Multi-container orchestration (Eureka, Gateway, DBs, Services)
 ├── run-services.bat                      # Windows CMD launcher (Docker Compose)
 ├── run-services.ps1                      # PowerShell launcher (Docker Compose)
 ├── run-services.sh                       # Bash launcher (Docker Compose)
-├── product-service/                      # Microservice 1 (Port 8081)
-│   ├── Dockerfile                        # Multi-stage Docker build (Maven -> Slim JRE)
-│   ├── .dockerignore
-│   ├── pom.xml                           # Spring Boot 3.4.3 & PostgreSQL driver
+├── discovery-server/                     # Eureka Discovery Server (Port 8761)
+│   ├── Dockerfile
+│   ├── pom.xml
+│   └── src/main/
+├── api-gateway/                          # Reactive Spring Cloud Gateway (Port 8080)
+│   ├── Dockerfile
+│   ├── pom.xml
+│   └── src/main/
+│       ├── java/com/example/apigateway/
+│       │   ├── ApiGatewayApplication.java
+│       │   └── LoggingAndCorrelationFilter.java
+│       └── resources/application.yml
+├── product-service/                      # Catalog Service (2 Replicas, Port 8081 Internal)
+│   ├── Dockerfile
+│   ├── pom.xml
 │   └── src/main/
 │       ├── java/com/example/productservice/
-│       │   ├── Product.java
-│       │   ├── ProductRepository.java
 │       │   ├── ProductController.java
-│       │   ├── ProductNotFoundException.java
-│       │   ├── InsufficientStockException.java
-│       │   └── ProductServiceApplication.java
-│       └── resources/
-│           └── application.properties    # port 8081, externalized PostgreSQL datasource
-└── order-service/                        # Microservice 2 (Port 8082)
-    ├── Dockerfile                        # Multi-stage Docker build (Maven -> Slim JRE)
-    ├── .dockerignore
-    ├── pom.xml                           # Spring Boot 3.4.3 & PostgreSQL driver
+│       │   ├── InstanceIdFilter.java     # Attaches X-Instance-Id response header
+│       │   └── ...
+│       └── resources/application.properties
+└── order-service/                        # Order Service (Port 8082 Internal)
+    ├── Dockerfile
+    ├── pom.xml
     └── src/main/
         ├── java/com/example/orderservice/
-        │   ├── Order.java
-        │   ├── OrderRepository.java
-        │   ├── OrderController.java
-        │   ├── ProductDTO.java
-        │   ├── ProductNotFoundException.java
-        │   ├── InsufficientStockException.java
-        │   ├── OrderProcessingException.java
-        │   └── OrderServiceApplication.java
-        └── resources/
-            └── application.properties    # port 8082, externalized PostgreSQL & product URL
+        │   ├── OrderController.java      # Calls http://product-service
+        │   ├── OrderServiceApplication.java # Configures @LoadBalanced RestClient
+        │   └── ...
+        └── resources/application.properties
 ```
+
+---
+
+## Port Summary
+
+| Component | Port | Host Access | Description |
+|---|---|---|---|
+| **API Gateway** | `8080` | `http://localhost:8080` | **Sole public API entry point** |
+| **Eureka Server** | `8761` | `http://localhost:8761` | **Eureka Discovery Dashboard & Registry** |
+| **product-service** | `8081` | *Internal only* | Replicated (2 instances), load balanced |
+| **order-service** | `8082` | *Internal only* | Calls `http://product-service` via LoadBalancer |
+| **product-db** | `5432` | *Internal only* | PostgreSQL database for `product-service` |
+| **order-db** | `5432` | *Internal only* | PostgreSQL database for `order-service` |
 
 ---
 
@@ -54,7 +104,7 @@ MS1/
 
 ### Option A: Using Docker Compose (Recommended)
 
-Run the entire microservices stack (PostgreSQL databases + Spring Boot services) with a single command from the project root:
+Start the entire ecosystem with a single command from the project root:
 
 ```bash
 docker compose up --build
@@ -66,19 +116,19 @@ To run in detached (background) mode:
 docker compose up -d --build
 ```
 
-To view logs:
+View live logs (including gateway correlation and instance routing):
 
 ```bash
 docker compose logs -f
 ```
 
-To stop and remove containers and networks:
+Stop and tear down the stack:
 
 ```bash
 docker compose down
 ```
 
-To reset all data (including database volumes):
+Reset database volumes:
 
 ```bash
 docker compose down -v
@@ -87,8 +137,6 @@ docker compose down -v
 ---
 
 ### Option B: Using Launcher Scripts
-
-Quick-start scripts at the repository root invoke Docker Compose:
 
 - **Windows Batch (CMD / Double-click):**
   ```cmd
@@ -106,100 +154,23 @@ Quick-start scripts at the repository root invoke Docker Compose:
 
 ---
 
-### Option C: Manual Local Execution (Maven)
+## Verifying Features & Testing Endpoints
 
-If running directly on the host without containerizing the services, ensure PostgreSQL is running locally on port 5432 with databases `productdb` and `orderdb`.
+### 1. View Eureka Service Registry
+Open your browser and navigate to:
+**`http://localhost:8761`**
 
-#### Step 1: Compile the project
-
-```bash
-mvn clean compile
-```
-
-#### Step 2: Start each microservice in separate terminals
-
-##### Terminal 1: Run Product Service (Port 8081)
-
-```bash
-cd product-service
-mvn spring-boot:run
-```
-
-- Available at: `http://localhost:8081/products`
-- **Swagger UI:** `http://localhost:8081/swagger-ui.html`
-
-##### Terminal 2: Run Order Service (Port 8082)
-
-```bash
-cd order-service
-mvn spring-boot:run
-```
-
-- Available at: `http://localhost:8082/orders`
-- **Swagger UI:** `http://localhost:8082/swagger-ui.html`
+You will see:
+- `API-GATEWAY` (1 instance)
+- `ORDER-SERVICE` (1 instance)
+- `PRODUCT-SERVICE` (2 instances with individual container IDs)
 
 ---
 
-## Externalized Configuration
+### 2. Access Catalog via API Gateway
+`GET http://localhost:8080/products`
 
-All database credentials and service URLs are externalized with default fallbacks for local execution:
-
-| Service | Environment Variable | Description | Default Value |
-|---|---|---|---|
-| `product-service` | `SPRING_DATASOURCE_URL` | PostgreSQL JDBC connection URL | `jdbc:postgresql://localhost:5432/productdb` |
-| `product-service` | `SPRING_DATASOURCE_USERNAME` | Database username | `postgres` |
-| `product-service` | `SPRING_DATASOURCE_PASSWORD` | Database password | `postgres` |
-| `order-service` | `SPRING_DATASOURCE_URL` | PostgreSQL JDBC connection URL | `jdbc:postgresql://localhost:5432/orderdb` |
-| `order-service` | `SPRING_DATASOURCE_USERNAME` | Database username | `postgres` |
-| `order-service` | `SPRING_DATASOURCE_PASSWORD` | Database password | `postgres` |
-| `order-service` | `PRODUCT_SERVICE_URL` | Base URL of product-service | `http://localhost:8081` |
-
-In `docker-compose.yml`, Docker service names are used automatically:
-- `product-service` connects to `jdbc:postgresql://product-db:5432/productdb`
-- `order-service` connects to `jdbc:postgresql://order-db:5432/orderdb`
-- `order-service` communicates with `http://product-service:8081`
-
----
-
-## Startup Order & Healthchecks
-
-PostgreSQL databases take several seconds to initialize on startup. To prevent Spring Boot services from failing when starting before the database is ready, `docker-compose.yml` configures healthchecks:
-
-- **`product-db` & `order-db`:**
-  ```yaml
-  healthcheck:
-    test: ["CMD-SHELL", "pg_isready -U postgres -d <dbname>"]
-    interval: 5s
-    timeout: 5s
-    retries: 5
-  ```
-- **Service dependencies:**
-  - `product-service` waits for `product-db` with `condition: service_healthy`.
-  - `order-service` waits for `order-db` with `condition: service_healthy` and `product-service` with `condition: service_started`.
-
----
-
-## Swagger UI Interactive Documentation
-
-Both microservices have Swagger UI enabled for testing APIs directly in your browser:
-
-| Service | Swagger UI URL | OpenAPI Spec |
-|---|---|---|
-| **`product-service`** (Port 8081) | [http://localhost:8081/swagger-ui.html](http://localhost:8081/swagger-ui.html) | [http://localhost:8081/v3/api-docs](http://localhost:8081/v3/api-docs) |
-| **`order-service`** (Port 8082) | [http://localhost:8082/swagger-ui.html](http://localhost:8082/swagger-ui.html) | [http://localhost:8082/v3/api-docs](http://localhost:8082/v3/api-docs) |
-
-> **Tip:** In the Swagger UI dashboard, click any endpoint and hit **"Try it out"** -> **"Execute"** to send live requests.
-
----
-
-## Endpoints & Testing
-
-### 1. Check Initial Products & Stock (product-service)
-
-`GET http://localhost:8081/products`
-
-Returns:
-
+Response:
 ```json
 [
   { "id": 1, "name": "Laptop", "price": 999.99, "stock": 10 },
@@ -207,133 +178,64 @@ Returns:
   { "id": 3, "name": "Keyboard", "price": 49.99, "stock": 25 }
 ]
 ```
+Response Headers will include:
+- `X-Correlation-Id: <generated-uuid>`
+- `X-Instance-Id: <container-id-of-responding-replica>`
 
-### 2. Place an Order (order-service)
+---
 
-Order 2 units of Laptop (`productId: 1`):
+### 3. Place Orders and Verify Alternating Load Balancing
+Place multiple orders through the Gateway:
 
-`POST http://localhost:8082/orders`  
-Request body:
-
+`POST http://localhost:8080/orders`  
+Headers: `Content-Type: application/json`  
+Body:
 ```json
 {
   "productId": 1,
-  "quantity": 2
-}
-```
-
-Response:
-
-```json
-{
-  "id": 1,
-  "productId": 1,
-  "quantity": 2,
-  "unitPrice": 999.99,
-  "totalPrice": 1999.98,
-  "status": "CREATED"
-}
-```
-
-### 3. Verify Stock Decrement (product-service)
-
-Inspect Laptop stock after placing the order:
-
-`GET http://localhost:8081/products/1`
-
-Response (`stock` has decreased from `10` to `8`):
-
-```json
-{
-  "id": 1,
-  "name": "Laptop",
-  "price": 999.99,
-  "stock": 8
-}
-```
-
-### 4. Insufficient Stock (order-service)
-
-Try ordering more items than available in stock:
-
-`POST http://localhost:8082/orders`  
-Request body:
-
-```json
-{
-  "productId": 1,
-  "quantity": 999
-}
-```
-
-Response: `HTTP 400 Bad Request`
-
-```json
-{
-  "status": 400,
-  "error": "Bad Request",
-  "message": "Cannot place order: Insufficient stock for product ID 1",
-  "path": "/orders"
-}
-```
-
-### 5. Product Not Found (order-service)
-
-`POST http://localhost:8082/orders`  
-Request body:
-
-```json
-{
-  "productId": 999,
   "quantity": 1
 }
 ```
 
-Response: `HTTP 404 Not Found`
-
-```json
-{
-  "status": 404,
-  "error": "Not Found",
-  "message": "Product with ID 999 not found in product-service!",
-  "path": "/orders"
-}
+Observe in the container logs (`docker compose logs -f product-service`):
+```text
+product-service-1 | [product-service:d4a1b2c3] Deducting stock for product ID 1, quantity 1
+product-service-2 | [product-service:e5f6a7b8] Deducting stock for product ID 1, quantity 1
 ```
+Requests alternate round-robin between the two `product-service` replicas!
 
 ---
 
-## Microservices Architecture: Database-Per-Service & Distributed Consistency
+### 4. Correlation ID Tracing
+Send a custom Correlation ID:
+```bash
+curl -i -H "X-Correlation-Id: trace-abc-123" http://localhost:8080/products
+```
+The Gateway logs the incoming request with that ID, passes it to the downstream service, and returns `X-Correlation-Id: trace-abc-123` in the HTTP response.
 
-### The Core Problem: Why Two Databases Cannot Share One Transaction
-In a monolithic application with a single relational database, placing an order and decrementing stock can be wrapped in a single `@Transactional` method. If any step fails, the database automatically rolls back both tables atomically (ACID guarantees).
+---
 
-In a **microservices architecture** using the **Database-per-Service pattern**:
-- `product-service` owns its own database (`productdb`).
-- `order-service` owns its own database (`orderdb`).
-- Neither service can access the other's database directly.
+## Swagger Through the Gateway (Task 6 Analysis)
 
-Spring's `@Transactional` annotation only manages the local connection to `orderdb`. It cannot span network calls to rollback changes made in `productdb`.
+The OpenAPI specs for downstream services are reachable through the Gateway:
+- **`product-service` OpenAPI Spec**: `http://localhost:8080/v3/api-docs/product-service`
+- **`order-service` OpenAPI Spec**: `http://localhost:8080/v3/api-docs/order-service`
 
-### The Dual-Write Failure Scenario
-1. `order-service` calls `POST http://product-service:8081/products/1/deduct-stock?quantity=2`.
-2. `product-service` decrements stock from 10 to 8 and commits the change to `productdb`.
-3. If `order-service` encounters a local error (database constraint failure, unhandled runtime exception, or process crash) right before or during `orderRepository.save(order)`:
-   - The local order transaction fails.
-   - Without compensation, `productdb` retains the deducted stock (stock = 8), while `orderdb` has 0 record of the order.
-   - **Result:** Two laptops disappear from inventory without any order existing.
+### Is Aggregating Swagger UI in the Gateway Worth the Effort?
+- **Trade-off Analysis**:
+  - **Pros**: Gives developers a single web page to discover and interact with all APIs.
+  - **Cons & Complexities**:
+    1. **Reactive vs. Servlet Mismatch**: Spring Cloud Gateway is built on Spring WebFlux (reactive Netty), whereas downstream services use Spring WebMVC (Tomcat). Hosting Swagger UI directly in the Gateway requires pulling in WebFlux Swagger UI (`springdoc-openapi-starter-webflux-ui`).
+    2. **URL Rewrite & "Try It Out" Routing**: Downstream OpenAPI specs generate server URLs based on the service's internal port or relative path. For Swagger UI's "Try It Out" buttons to work through the Gateway without CORS or 404 errors, URL rewrites, OpenAPI server mutation filters, and `X-Forwarded-*` header forwarding must be heavily customized.
+    3. **Operational Boundary**: An API Gateway in production is meant to be a lightweight, high-throughput edge router, reverse proxy, and rate limiter. Running developer documentation UIs inside the edge proxy mixes operational runtime concerns with developer tooling.
+  - **Conclusion & Best Practice**: In production, routing the OpenAPI JSON specs (`/v3/api-docs/...`) through the Gateway (as implemented) is standard. Serving the visual Swagger UI is typically handled by a dedicated developer portal or API documentation service.
 
-### How This Project Solves It: Compensating Transaction (Saga Pattern)
-To ensure **eventual consistency** across both services:
-1. `product-service` provides a compensating endpoint:  
-   `POST /products/{id}/restore-stock?quantity={qty}`
-2. In `OrderController.java`, local order saving is wrapped in a failure handler:
-   ```java
-   try {
-       return orderRepository.save(order);
-   } catch (Exception ex) {
-       // Compensating Transaction (Saga): Restore deducted stock in product-service
-       compensateStock(order.getProductId(), order.getQuantity());
-       throw new OrderProcessingException("Order save failed. Compensating transaction executed: Stock restored.", ex);
-   }
-   ```
-3. If saving the order fails locally, `order-service` automatically invokes the compensating action to restore inventory, preserving stock consistency across independent services.
+---
+
+## Running Automated Tests
+
+All 34 automated unit and integration tests across the 4 modules can be executed with:
+
+```bash
+mvn test
+```

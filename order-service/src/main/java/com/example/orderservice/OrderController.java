@@ -1,6 +1,5 @@
 package com.example.orderservice;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -11,18 +10,14 @@ import java.util.List;
 @RequestMapping("/orders")
 public class OrderController {
 
+    private static final String PRODUCT_SERVICE_URL = "http://product-service";
+
     private final OrderRepository orderRepository;
     private final RestClient restClient;
-    private final String productServiceUrl;
 
-    public OrderController(OrderRepository orderRepository,
-                           RestClient restClient,
-                           @Value("${product.service.url:http://localhost:8081}") String productServiceUrl) {
+    public OrderController(OrderRepository orderRepository, RestClient restClient) {
         this.orderRepository = orderRepository;
         this.restClient = restClient;
-        this.productServiceUrl = productServiceUrl.endsWith("/")
-                ? productServiceUrl.substring(0, productServiceUrl.length() - 1)
-                : productServiceUrl;
     }
 
     // 1. Create Order -> POST http://localhost:8082/orders
@@ -31,9 +26,9 @@ public class OrderController {
         ProductDTO product;
 
         try {
-            // Deduct stock atomically in product-service (returns updated Product with price)
+            // Deduct stock atomically in product-service (resolved via Eureka & LoadBalancer: http://product-service)
             product = restClient.post()
-                    .uri(productServiceUrl + "/products/{id}/deduct-stock?quantity={qty}",
+                    .uri(PRODUCT_SERVICE_URL + "/products/{id}/deduct-stock?quantity={qty}",
                             order.getProductId(), order.getQuantity())
                     .retrieve()
                     .onStatus(status -> status.value() == 404, (request, response) -> {
@@ -63,7 +58,7 @@ public class OrderController {
             order.setStatus("CREATED");
         }
 
-        // Save order to H2 database with Compensating Transaction (Saga pattern)
+        // Save order to database with Compensating Transaction (Saga pattern)
         try {
             return orderRepository.save(order);
         } catch (Exception ex) {
@@ -78,7 +73,7 @@ public class OrderController {
     private void compensateStock(Long productId, int quantity) {
         try {
             restClient.post()
-                    .uri(productServiceUrl + "/products/{id}/restore-stock?quantity={qty}", productId, quantity)
+                    .uri(PRODUCT_SERVICE_URL + "/products/{id}/restore-stock?quantity={qty}", productId, quantity)
                     .retrieve()
                     .toBodilessEntity();
         } catch (Exception e) {

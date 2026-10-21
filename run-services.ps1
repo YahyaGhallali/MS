@@ -4,7 +4,12 @@ $ErrorActionPreference = "Stop"
 Write-Host "===================================================" -ForegroundColor Cyan
 Write-Host "  Starting Microservices with Docker Compose      " -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host "Services: product-db, order-db, product-service (8081), order-service (8082)" -ForegroundColor Yellow
-Write-Host "Press Ctrl+C to stop all services.`n" -ForegroundColor DarkGray
+Write-Host "Services:" -ForegroundColor Yellow
+Write-Host "  - discovery-server : http://localhost:8761 (Eureka Dashboard)" -ForegroundColor Cyan
+Write-Host "  - api-gateway      : http://localhost:8080 (Public API Entry)" -ForegroundColor Cyan
+Write-Host "  - product-service  : 2 Replicas (Registered in Eureka)" -ForegroundColor Cyan
+Write-Host "  - order-service    : 1 Replica (Registered in Eureka)" -ForegroundColor Cyan
+Write-Host "  - databases        : productdb, orderdb (PostgreSQL)" -ForegroundColor Cyan
+Write-Host "`nPress Ctrl+C to stop all services.`n" -ForegroundColor DarkGray
 
 docker compose up --build
