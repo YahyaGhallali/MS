@@ -1,9 +1,9 @@
 # MS1 Microservices Workspace
 
-This repository contains two independent Spring Boot microservices:
+This repository contains two independent Spring Boot microservices containerized with Docker and backed by PostgreSQL:
 
-1. **`product-service`** (Runs on port `8081`, manages product catalog)
-2. **`order-service`** (Runs on port `8082`, places orders and communicates with `product-service` via `RestClient`)
+1. **`product-service`** (Runs on port `8081`, backed by `productdb`, manages product catalog)
+2. **`order-service`** (Runs on port `8082`, backed by `orderdb`, places orders and communicates with `product-service` via `RestClient`)
 
 ---
 
@@ -11,9 +11,15 @@ This repository contains two independent Spring Boot microservices:
 
 ```text
 MS1/
+├── docker-compose.yml                    # Multi-container orchestration (DBs + Services)
 ├── pom.xml                               # Root parent / aggregator POM
+├── run-services.bat                      # Windows CMD launcher (Docker Compose)
+├── run-services.ps1                      # PowerShell launcher (Docker Compose)
+├── run-services.sh                       # Bash launcher (Docker Compose)
 ├── product-service/                      # Microservice 1 (Port 8081)
-│   ├── pom.xml
+│   ├── Dockerfile                        # Multi-stage Docker build (Maven -> Slim JRE)
+│   ├── .dockerignore
+│   ├── pom.xml                           # Spring Boot 3.4.3 & PostgreSQL driver
 │   └── src/main/
 │       ├── java/com/example/productservice/
 │       │   ├── Product.java
@@ -23,9 +29,11 @@ MS1/
 │       │   ├── InsufficientStockException.java
 │       │   └── ProductServiceApplication.java
 │       └── resources/
-│           └── application.properties    # port 8081, jdbc:h2:mem:productdb
+│           └── application.properties    # port 8081, externalized PostgreSQL datasource
 └── order-service/                        # Microservice 2 (Port 8082)
-    ├── pom.xml
+    ├── Dockerfile                        # Multi-stage Docker build (Maven -> Slim JRE)
+    ├── .dockerignore
+    ├── pom.xml                           # Spring Boot 3.4.3 & PostgreSQL driver
     └── src/main/
         ├── java/com/example/orderservice/
         │   ├── Order.java
@@ -37,16 +45,50 @@ MS1/
         │   ├── OrderProcessingException.java
         │   └── OrderServiceApplication.java
         └── resources/
-            └── application.properties    # port 8082, jdbc:h2:mem:orderdb
+            └── application.properties    # port 8082, externalized PostgreSQL & product URL
 ```
 
 ---
 
 ## How to Run
 
-### Option A: Using the Launcher Script (Recommended)
+### Option A: Using Docker Compose (Recommended)
 
-You can launch both microservices simultaneously with a single command from the project root:
+Run the entire microservices stack (PostgreSQL databases + Spring Boot services) with a single command from the project root:
+
+```bash
+docker compose up --build
+```
+
+To run in detached (background) mode:
+
+```bash
+docker compose up -d --build
+```
+
+To view logs:
+
+```bash
+docker compose logs -f
+```
+
+To stop and remove containers and networks:
+
+```bash
+docker compose down
+```
+
+To reset all data (including database volumes):
+
+```bash
+docker compose down -v
+```
+
+---
+
+### Option B: Using Launcher Scripts
+
+Quick-start scripts at the repository root invoke Docker Compose:
 
 - **Windows Batch (CMD / Double-click):**
   ```cmd
@@ -64,9 +106,11 @@ You can launch both microservices simultaneously with a single command from the 
 
 ---
 
-### Option B: Manual Execution
+### Option C: Manual Local Execution (Maven)
 
-#### Step 1: Build the entire project (Optional first step)
+If running directly on the host without containerizing the services, ensure PostgreSQL is running locally on port 5432 with databases `productdb` and `orderdb`.
+
+#### Step 1: Compile the project
 
 ```bash
 mvn clean compile
@@ -77,30 +121,67 @@ mvn clean compile
 ##### Terminal 1: Run Product Service (Port 8081)
 
 ```bash
-cd c:\Users\yahya\Desktop\MS1\product-service
+cd product-service
 mvn spring-boot:run
 ```
 
 - Available at: `http://localhost:8081/products`
 - **Swagger UI:** `http://localhost:8081/swagger-ui.html`
-- H2 Console: `http://localhost:8081/h2-console` (JDBC: `jdbc:h2:mem:productdb`)
 
-##### Terminal 2: Run Order Service
+##### Terminal 2: Run Order Service (Port 8082)
 
 ```bash
-cd c:\Users\yahya\Desktop\MS1\order-service
+cd order-service
 mvn spring-boot:run
 ```
 
 - Available at: `http://localhost:8082/orders`
 - **Swagger UI:** `http://localhost:8082/swagger-ui.html`
-- H2 Console: `http://localhost:8082/h2-console` (JDBC: `jdbc:h2:mem:orderdb`)
+
+---
+
+## Externalized Configuration
+
+All database credentials and service URLs are externalized with default fallbacks for local execution:
+
+| Service | Environment Variable | Description | Default Value |
+|---|---|---|---|
+| `product-service` | `SPRING_DATASOURCE_URL` | PostgreSQL JDBC connection URL | `jdbc:postgresql://localhost:5432/productdb` |
+| `product-service` | `SPRING_DATASOURCE_USERNAME` | Database username | `postgres` |
+| `product-service` | `SPRING_DATASOURCE_PASSWORD` | Database password | `postgres` |
+| `order-service` | `SPRING_DATASOURCE_URL` | PostgreSQL JDBC connection URL | `jdbc:postgresql://localhost:5432/orderdb` |
+| `order-service` | `SPRING_DATASOURCE_USERNAME` | Database username | `postgres` |
+| `order-service` | `SPRING_DATASOURCE_PASSWORD` | Database password | `postgres` |
+| `order-service` | `PRODUCT_SERVICE_URL` | Base URL of product-service | `http://localhost:8081` |
+
+In `docker-compose.yml`, Docker service names are used automatically:
+- `product-service` connects to `jdbc:postgresql://product-db:5432/productdb`
+- `order-service` connects to `jdbc:postgresql://order-db:5432/orderdb`
+- `order-service` communicates with `http://product-service:8081`
+
+---
+
+## Startup Order & Healthchecks
+
+PostgreSQL databases take several seconds to initialize on startup. To prevent Spring Boot services from failing when starting before the database is ready, `docker-compose.yml` configures healthchecks:
+
+- **`product-db` & `order-db`:**
+  ```yaml
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -d <dbname>"]
+    interval: 5s
+    timeout: 5s
+    retries: 5
+  ```
+- **Service dependencies:**
+  - `product-service` waits for `product-db` with `condition: service_healthy`.
+  - `order-service` waits for `order-db` with `condition: service_healthy` and `product-service` with `condition: service_started`.
 
 ---
 
 ## Swagger UI Interactive Documentation
 
-Both microservices have Swagger UI enabled for testing APIs directly in your browser without needing curl or Postman:
+Both microservices have Swagger UI enabled for testing APIs directly in your browser:
 
 | Service | Swagger UI URL | OpenAPI Spec |
 |---|---|---|
@@ -227,14 +308,14 @@ Response: `HTTP 404 Not Found`
 In a monolithic application with a single relational database, placing an order and decrementing stock can be wrapped in a single `@Transactional` method. If any step fails, the database automatically rolls back both tables atomically (ACID guarantees).
 
 In a **microservices architecture** using the **Database-per-Service pattern**:
-- `product-service` owns its own database (`jdbc:h2:mem:productdb`).
-- `order-service` owns its own database (`jdbc:h2:mem:orderdb`).
+- `product-service` owns its own database (`productdb`).
+- `order-service` owns its own database (`orderdb`).
 - Neither service can access the other's database directly.
 
 Spring's `@Transactional` annotation only manages the local connection to `orderdb`. It cannot span network calls to rollback changes made in `productdb`.
 
 ### The Dual-Write Failure Scenario
-1. `order-service` calls `POST http://localhost:8081/products/1/deduct-stock?quantity=2`.
+1. `order-service` calls `POST http://product-service:8081/products/1/deduct-stock?quantity=2`.
 2. `product-service` decrements stock from 10 to 8 and commits the change to `productdb`.
 3. If `order-service` encounters a local error (database constraint failure, unhandled runtime exception, or process crash) right before or during `orderRepository.save(order)`:
    - The local order transaction fails.
@@ -244,7 +325,7 @@ Spring's `@Transactional` annotation only manages the local connection to `order
 ### How This Project Solves It: Compensating Transaction (Saga Pattern)
 To ensure **eventual consistency** across both services:
 1. `product-service` provides a compensating endpoint:  
-   `POST http://localhost:8081/products/{id}/restore-stock?quantity={qty}`
+   `POST /products/{id}/restore-stock?quantity={qty}`
 2. In `OrderController.java`, local order saving is wrapped in a failure handler:
    ```java
    try {
@@ -256,5 +337,3 @@ To ensure **eventual consistency** across both services:
    }
    ```
 3. If saving the order fails locally, `order-service` automatically invokes the compensating action to restore inventory, preserving stock consistency across independent services.
-
-

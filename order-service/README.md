@@ -1,6 +1,6 @@
 # Order Service (Spring Boot)
 
-Microservice for managing orders, running on **port 8082** with its own in-memory H2 database.
+Microservice for managing orders, running on **port 8082** with its own PostgreSQL database (`orderdb`).
 
 ---
 
@@ -8,7 +8,9 @@ Microservice for managing orders, running on **port 8082** with its own in-memor
 
 ```text
 order-service/
-├── pom.xml
+├── Dockerfile                          # Multi-stage Docker build
+├── .dockerignore                       # Docker ignore patterns
+├── pom.xml                             # Maven build & dependencies (Spring Boot 3.4.3, PostgreSQL)
 └── src/
     └── main/
         ├── java/com/example/orderservice/
@@ -19,28 +21,40 @@ order-service/
         │   ├── ProductNotFoundException.java   # Custom 404 Exception
         │   ├── InsufficientStockException.java # Custom 400 Exception
         │   ├── OrderProcessingException.java   # Custom 500 Exception for Saga compensation
-        │   └── OrderServiceApplication.java     # Main class & RestClient bean
+        │   └── OrderServiceApplication.java    # Main class & RestClient bean
         └── resources/
-            └── application.properties          # Port (8082) & H2 (jdbc:h2:mem:orderdb)
+            └── application.properties          # Port (8082), PostgreSQL config, product.service.url
 ```
 
 ---
 
-## How to Run Both Services
+## How to Run
 
-Open **two separate terminals**:
+### Option A: Using Docker Compose (Recommended)
 
-### Terminal 1: Start `product-service` (Port 8081)
+From the project root directory:
 
 ```bash
-cd c:\Users\yahya\Desktop\MS1\product-service
+docker compose up --build
+```
+
+This starts `product-db`, `order-db`, `product-service` (port 8081), and `order-service` (port 8082) together with healthchecks.
+
+### Option B: Local Maven Execution
+
+If you have PostgreSQL running locally on port 5432 with databases `productdb` and `orderdb`:
+
+#### Terminal 1: Start `product-service` (Port 8081)
+
+```bash
+cd product-service
 mvn spring-boot:run
 ```
 
-### Terminal 2: Start `order-service` (Port 8082)
+#### Terminal 2: Start `order-service` (Port 8082)
 
 ```bash
-cd c:\Users\yahya\Desktop\MS1\order-service
+cd order-service
 mvn spring-boot:run
 ```
 
@@ -50,9 +64,10 @@ mvn spring-boot:run
 
 | HTTP Method | URL | Description |
 | --- | --- | --- |
-| **POST** | `http://localhost:8082/orders` | Create an order (atomically deducts stock from `product-service` on port 8081, with compensating rollback if local save fails) |
+| **POST** | `http://localhost:8082/orders` | Create an order (atomically deducts stock from `product-service`, with compensating rollback if local save fails) |
 | **GET** | `http://localhost:8082/orders` | Get all orders |
 | **GET** | `http://localhost:8082/orders/{id}` | Get order by ID |
+| **GET** | `http://localhost:8082/swagger-ui.html` | Swagger UI documentation |
 
 ---
 
@@ -145,9 +160,11 @@ Try to order product ID `999` which does not exist in `product-service`.
 
 ---
 
-## H2 Database Console
+## Configuration & Environment Variables
 
-- **URL:** `http://localhost:8082/h2-console`
-- **JDBC URL:** `jdbc:h2:mem:orderdb`
-- **User Name:** `sa`
-- **Password:** *(leave empty)*
+| Variable | Description | Default Value |
+|---|---|---|
+| `SPRING_DATASOURCE_URL` | PostgreSQL JDBC connection URL | `jdbc:postgresql://localhost:5432/orderdb` |
+| `SPRING_DATASOURCE_USERNAME` | Database username | `postgres` |
+| `SPRING_DATASOURCE_PASSWORD` | Database password | `postgres` |
+| `PRODUCT_SERVICE_URL` | Base URL for `product-service` | `http://localhost:8081` |

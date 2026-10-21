@@ -1,5 +1,6 @@
 package com.example.orderservice;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -12,10 +13,16 @@ public class OrderController {
 
     private final OrderRepository orderRepository;
     private final RestClient restClient;
+    private final String productServiceUrl;
 
-    public OrderController(OrderRepository orderRepository, RestClient restClient) {
+    public OrderController(OrderRepository orderRepository,
+                           RestClient restClient,
+                           @Value("${product.service.url:http://localhost:8081}") String productServiceUrl) {
         this.orderRepository = orderRepository;
         this.restClient = restClient;
+        this.productServiceUrl = productServiceUrl.endsWith("/")
+                ? productServiceUrl.substring(0, productServiceUrl.length() - 1)
+                : productServiceUrl;
     }
 
     // 1. Create Order -> POST http://localhost:8082/orders
@@ -26,7 +33,7 @@ public class OrderController {
         try {
             // Deduct stock atomically in product-service (returns updated Product with price)
             product = restClient.post()
-                    .uri("http://localhost:8081/products/{id}/deduct-stock?quantity={qty}",
+                    .uri(productServiceUrl + "/products/{id}/deduct-stock?quantity={qty}",
                             order.getProductId(), order.getQuantity())
                     .retrieve()
                     .onStatus(status -> status.value() == 404, (request, response) -> {
@@ -71,7 +78,7 @@ public class OrderController {
     private void compensateStock(Long productId, int quantity) {
         try {
             restClient.post()
-                    .uri("http://localhost:8081/products/{id}/restore-stock?quantity={qty}", productId, quantity)
+                    .uri(productServiceUrl + "/products/{id}/restore-stock?quantity={qty}", productId, quantity)
                     .retrieve()
                     .toBodilessEntity();
         } catch (Exception e) {

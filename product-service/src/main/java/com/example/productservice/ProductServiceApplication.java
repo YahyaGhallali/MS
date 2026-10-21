@@ -16,9 +16,11 @@ public class ProductServiceApplication {
     @Bean
     public CommandLineRunner initData(ProductRepository productRepository) {
         return args -> {
-            productRepository.save(new Product("Laptop", 999.99, 10));
-            productRepository.save(new Product("Mouse", 29.99, 50));
-            productRepository.save(new Product("Keyboard", 49.99, 25));
+            if (productRepository.count() == 0) {
+                productRepository.save(new Product("Laptop", 999.99, 10));
+                productRepository.save(new Product("Mouse", 29.99, 50));
+                productRepository.save(new Product("Keyboard", 49.99, 25));
+            }
         };
     }
 }
