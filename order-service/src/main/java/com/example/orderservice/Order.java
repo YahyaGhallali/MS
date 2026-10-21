@@ -24,6 +24,12 @@ public class Order {
     public Order() {
     }
 
+    // Convenience constructor for creating orders
+    public Order(Long productId, int quantity) {
+        this.productId = productId;
+        this.quantity = quantity;
+    }
+
     // Parameterized constructor
     public Order(Long productId, int quantity, double unitPrice, double totalPrice, String status) {
         this.productId = productId;
